@@ -7,20 +7,28 @@ app.use(cors());
 
 app.get('/api/proxies', async (req, res) => {
   try {
-    // جلب أفضل البروكسيات من Proxmint
-    const response = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&sort=score&limit=50');
+    // جلب المزيد من البروكسيات لضمان وجود عدد كافٍ بعد الفلترة
+    const response = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&limit=200');
     
     const rows = response.data.rows || [];
     
-    // ترتيبها حسب التقييم والأخذ أفضل 20
-    const bestProxies = rows
+    // فلترة البروكسيات: أمريكا فقط + جودة من متوسطة إلى عالية
+    const filteredProxies = rows.filter(p => {
+      const isUS = p.countryCode?.toLowerCase() === 'us' || p.countryName === 'United States';
+      const isGoodSpeed = p.latencyMs >= 100 && p.latencyMs <= 1500; // سرعة جيدة (أقل من 1.5 ثانية)
+      const isGoodRisk = p.uptimePct >= 80; // استقرار عالي (فوق 80%)
+      return isUS && isGoodSpeed && isGoodRisk;
+    });
+
+    // ترتيب البروكسيات حسب التقييم (الأفضل أولاً) والأخذ أفضل 20
+    const bestProxies = filteredProxies
       .sort((a, b) => b.score - a.score)
       .slice(0, 20)
       .map(p => ({
         ip: p.ip,
         port: p.port,
-        country: p.countryName || p.countryCode || 'Unknown',
-        latency: p.latencyMs || 999
+        country: 'United States',
+        latency: p.latencyMs
       }));
 
     res.json({ proxies: bestProxies });
