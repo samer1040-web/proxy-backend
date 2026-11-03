@@ -1,76 +1,28 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const { SocksProxyAgent } = require('socks-proxy-agent');
 
 const app = express();
 app.use(cors());
 
-async function fetchFromProxyScrape() {
-  try {
-    const res = await axios.get('https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/countries/us/socks5/data.json');
-    return res.data.map(p => ({ ...p, source: 'proxyscrape' }));
-  } catch (e) {
-    console.error('ProxyScrape failed:', e.message);
-    return [];
-  }
-}
-
-async function fetchFromProxmint() {
-  try {
-    const res = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&countryCode=us&limit=150');
-    return (res.data.rows || []).map(p => ({ ...p, source: 'proxmint' }));
-  } catch (e) {
-    console.error('Proxmint failed:', e.message);
-    return [];
-  }
-}
-
 app.get('/api/proxies', async (req, res) => {
   try {
-    const [scrapeProxies, mintProxies] = await Promise.all([
-      fetchFromProxyScrape(),
-      fetchFromProxmint()
-    ]);
+    // جلب البروكسيات الأمريكية مباشرة من Proxmint
+    const response = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&countryCode=us&limit=100');
+    const rows = response.data.rows || [];
 
-    const allProxies = [...scrapeProxies, ...mintProxies];
-    const uniqueProxies = Array.from(
-      new Map(allProxies.map(p => [`${p.ip}:${p.port}`, p])).values()
-    );
-
-    const topCandidates = uniqueProxies
-      .sort((a, b) => (b.score || 0) - (a.score || 0))
-      .slice(0, 35);
-
-    const speedTest = async (p) => {
-      const agent = new SocksProxyAgent(`socks://${p.ip}:${p.port}`);
-      const start = Date.now();
-      try {
-        await axios.get('https://api.ipify.org', { 
-          httpAgent: agent, 
-          httpsAgent: agent, 
-          timeout: 5000 
-        });
-        return { ...p, actualLatency: Date.now() - start };
-      } catch (err) {
-        return null;
-      }
-    };
-
-    const testedProxies = await Promise.all(topCandidates.map(p => speedTest(p)));
-
-    const fastProxies = testedProxies
-      .filter(p => p !== null)
-      .sort((a, b) => a.actualLatency - b.actualLatency)
+    // ترتيبها حسب السرعة (الأقل هو الأسرع) وأخذ أفضل 10
+    const bestProxies = rows
+      .sort((a, b) => a.latencyMs - b.latencyMs)
       .slice(0, 10)
       .map(p => ({
         ip: p.ip,
         port: p.port,
         country: 'United States',
-        latency: p.actualLatency
+        latency: p.latencyMs
       }));
 
-    res.json({ proxies: fastProxies });
+    res.json({ proxies: bestProxies });
   } catch (error) {
     console.error("Fetch error:", error.message);
     res.status(500).json({ error: 'Failed to fetch proxies', proxies: [] });
