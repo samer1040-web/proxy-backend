@@ -1,56 +1,80 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const { SocksProxyAgent } = require('socks-proxy-agent'); // مكتبة فحص السرعة
+const { SocksProxyAgent } = require('socks-proxy-agent');
 
 const app = express();
 app.use(cors());
 
+// دالة لجلب البروكسيات من مصدر ProxyScrape
+async function fetchFromProxyScrape() {
+  try {
+    const res = await axios.get('https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/countries/us/socks5/data.json');
+    return res.data.map(p => ({ ...p, source: 'proxyscrape' }));
+  } catch (e) {
+    console.error('ProxyScrape failed:', e.message);
+    return [];
+  }
+}
+
+// دالة لجلب البروكسيات من مصدر Proxmint
+async function fetchFromProxmint() {
+  try {
+    const res = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&countryCode=us&limit=150');
+    return (res.data.rows || []).map(p => ({ ...p, source: 'proxmint' }));
+  } catch (e) {
+    console.error('Proxmint failed:', e.message);
+    return [];
+  }
+}
+
 app.get('/api/proxies', async (req, res) => {
   try {
-    // جلب كمية كبيرة من البروكسيات
-    const response = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&limit=300');
-    const rows = response.data.rows || [];
-    
-    // فلترة أولية: أمريكا فقط
-    const usProxies = rows.filter(p => {
-      const isUS = p.countryCode?.toLowerCase() === 'us' || p.countryName === 'United States';
-      return isUS && p.uptimePct >= 60; 
-    });
+    // جلب البيانات من المصدرين في نفس الوقت
+    const [scrapeProxies, mintProxies] = await Promise.all([
+      fetchFromProxyScrape(),
+      fetchFromProxmint()
+    ]);
 
-    // أخذ أفضل 25 بروكسي حسب تقييم الموقع لاختبارهم
-    const topCandidates = usProxies.sort((a, b) => b.score - a.score).slice(0, 25);
+    // دمج البروكسيات وإزالة التكرار
+    const allProxies = [...scrapeProxies, ...mintProxies];
+    const uniqueProxies = Array.from(
+      new Map(allProxies.map(p => [`${p.ip}:${p.port}`, p])).values()
+    );
 
-    // اختبار السرعة الفعلي لكل بروكسي
+    // ترتيب مبدئي حسب التقييم (إن وجد) والأخذ أفضل 35 للاختبار
+    const topCandidates = uniqueProxies
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 35);
+
+    // اختبار السرعة الحقيقي لكل بروكسي
     const speedTest = async (p) => {
       const agent = new SocksProxyAgent(`socks://${p.ip}:${p.port}`);
       const start = Date.now();
       try {
-        // طلب ملف صغير جداً لقياس سرعة الاستجابة الحقيقية
-        await axios.get('http://www.gstatic.com/generate_204', { 
+        await axios.get('https://api.ipify.org', { 
           httpAgent: agent, 
           httpsAgent: agent, 
-          timeout: 4000 // إذا تأخر أكثر من 4 ثواني، نعتبره بطيئاً
+          timeout: 5000 
         });
         return { ...p, actualLatency: Date.now() - start };
       } catch (err) {
-        return null; // البروكسي فشل في الاختبار
+        return null;
       }
     };
 
-    // تشغيل الاختبار للجميع في نفس الوقت
     const testedProxies = await Promise.all(topCandidates.map(p => speedTest(p)));
 
-    // تصفية البروكسيات التي فشلت، وترتيبها حسب السرعة الفعلية
+    // اختيار أسرع 10 بروكسيات فقط
     const fastProxies = testedProxies
       .filter(p => p !== null)
       .sort((a, b) => a.actualLatency - b.actualLatency)
-      .slice(0, 10) // نرسل أسرع 10 بروكسيات فقط
+      .slice(0, 10)
       .map(p => ({
         ip: p.ip,
         port: p.port,
         country: 'United States',
-        latency: p.actualLatency // نعرض السرعة الحقيقية
+        latency: p.actualLatency
       }));
 
     res.json({ proxies: fastProxies });
