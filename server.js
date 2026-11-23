@@ -18,7 +18,16 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const JWT_SECRET = 'ProxyNova_Super_Secret_Key_2024'; 
+// ==========================================
+// الخطوة 1: تأمين مفتاح JWT (تم التعديل)
+// ==========================================
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  console.error("FATAL SECURITY ERROR: JWT_SECRET is missing or too short. Server shutting down.");
+  process.exit(1);
+}
+// ==========================================
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
