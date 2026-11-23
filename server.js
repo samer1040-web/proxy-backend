@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config(); 
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -8,9 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-
-// 1. إصلاح خطأ X-Forwarded-For (خاص بـ Render)
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // لحل مشكلة Render
 
 app.use(cors());
 app.use(express.json());
@@ -28,7 +26,25 @@ const authLimiter = rateLimit({
   message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
-// مسار التسجيل
+// ---------------------------------------------------------
+// 1. طبقة الحماية (Middleware) للتحقق من التوكن
+// ---------------------------------------------------------
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // استخراج التوكن بعد كلمة Bearer
+
+  if (!token) return res.status(401).json({ error: 'Access denied. No token provided.' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid or expired token.' });
+    req.user = user; // حفظ بيانات المستخدم في الطلب
+    next();
+  });
+};
+
+// ---------------------------------------------------------
+// مسار التسجيل (Register)
+// ---------------------------------------------------------
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
     const { email, password, username } = req.body;
@@ -54,10 +70,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
         balance: 0 
       }]);
 
-    if (error) {
-        console.error("Supabase Insert Error:", error); // لطباعة الخطأ الحقيقي في السجلات
-        throw error;
-    }
+    if (error) throw error;
 
     res.status(201).json({ message: 'User registered successfully' });
   } catch (error) {
@@ -66,7 +79,9 @@ app.post('/api/register', authLimiter, async (req, res) => {
   }
 });
 
-// مسار تسجيل الدخول
+// ---------------------------------------------------------
+// مسار تسجيل الدخول (Login)
+// ---------------------------------------------------------
 app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -101,7 +116,68 @@ app.post('/api/login', authLimiter, async (req, res) => {
   }
 });
 
-// مسار جلب البروكسيات المجانية
+// ---------------------------------------------------------
+// 2. مسار شراء الباقة (Buy Proxy) - محمي بالتوكن
+// ---------------------------------------------------------
+app.post('/api/buy-proxy', authenticateToken, async (req, res) => {
+  try {
+    const { plan } = req.body;
+    const userId = req.user.id; // جلب معرف المستخدم من التوكن
+
+    // تحديد السعر بناءً على الباقة المطلوبة
+    let price = 0;
+    if (plan === '300MB') price = 0.25;
+    else if (plan === '600MB') price = 0.50;
+    else if (plan === '1000MB') price = 1.00;
+    else return res.status(400).json({ error: 'Invalid plan selected' });
+
+    // جلب بيانات المستخدم الحالية من قاعدة البيانات
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('balance')
+      .eq('id', userId)
+      .single();
+
+    if (error || !user) return res.status(404).json({ error: 'User not found' });
+
+    // التحقق من كفاية الرصيد
+    if (user.balance < price) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+
+    // خصم المبلغ وتحديث الرصيد
+    const newBalance = user.balance - price;
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ balance: newBalance })
+      .eq('id', userId);
+
+    if (updateError) throw updateError;
+
+    // محاكاة جلب بروكسي من HProxy (بيانات وهمية للتجربة)
+    const mockProxy = {
+      host: 'us-residential.hproxy.net',
+      port: 8000,
+      username: `user_${userId}_sess_${Math.floor(Math.random() * 10000)}`,
+      password: 'ProxyNovaPass!',
+      dataLimit: plan
+    };
+
+    res.json({
+      message: 'Purchase successful',
+      newBalance: newBalance,
+      proxy: mockProxy
+    });
+
+  } catch (error) {
+    console.error("Buy Proxy Error:", error.message);
+    res.status(500).json({ error: 'Server error during purchase' });
+  }
+});
+
+// ---------------------------------------------------------
+// مسار جلب البروكسيات المجانية (لم يمس)
+// ---------------------------------------------------------
 app.get('/api/proxies', async (req, res) => {
   try {
     const response = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&countryCode=us&limit=100');
