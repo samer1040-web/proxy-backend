@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>باقات البروكسي السكني</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+        h1 { color: #4CAF50; }
+        .plans-container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin-top: 40px;
+        }
+        .plan-card {
+            background-color: #1e1e1e;
+            border: 2px solid #333;
+            border-radius: 10px;
+            padding: 20px;
+            width: 250px;
+            transition: 0.3s;
+        }
+        .plan-card:hover { border-color: #4CAF50; transform: translateY(-5px); }
+        .plan-title { font-size: 22px; margin-bottom: 10px; color: #fff; }
+        .plan-data { font-size: 18px; color: #aaa; margin-bottom: 20px; }
+        .plan-price { font-size: 28px; color: #4CAF50; font-weight: bold; margin-bottom: 20px; }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover { background-color: #45a049; }
+    </style>
+</head>
+<body>
+
+    <h1>اختر الباقة المناسبة</h1>
+    <p>بروكسيات سكنية نظيفة ومستقرة لعروضك</p>
+
+    <div class="plans-container">
+        <!-- الباقة الأولى -->
+        <div class="plan-card">
+            <div class="plan-title">باقة البداية</div>
+            <div class="plan-data">300 ميجابايت</div>
+            <div class="plan-price">$0.25</div>
+            <button>شراء الآن</button>
+        </div>
+
+        <!-- الباقة الثانية -->
+        <div class="plan-card">
+            <div class="plan-title">باقة التوفير</div>
+            <div class="plan-data">600 ميجابايت</div>
+            <div class="plan-price">$0.50</div>
+            <button>شراء الآن</button>
+        </div>
+
+        <!-- الباقة الثالثة -->
+        <div class="plan-card">
+            <div class="plan-title">باقة المحترفين</div>
+            <div class="plan-data">1000 ميجابايت (1 جيجا)</div>
+            <div class="plan-price">$0.80</div>
+            <button>شراء الآن</button>
+        </div>
+    </div>
+
+</body>
+</html>
