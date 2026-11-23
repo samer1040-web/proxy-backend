@@ -5,24 +5,21 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const helmet = require('helmet'); // تمت الإضافة
-const crypto = require('crypto'); // لتوليد كلمات مرور عشوائية
+const helmet = require('helmet');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.set('trust proxy', 1); 
 
-// 1. إضافة ترويسات الأمان (Helmet)
 app.use(helmet());
 app.use(cors());
-app.use(express.json({ limit: '10kb' })); // منع إرسال بيانات ضخمة تستنزف الخادم
+app.use(express.json({ limit: '10kb' }));
 app.use(express.static('public'));
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// 2. تأمين مفتاح JWT
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
@@ -48,7 +45,6 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// 3. مسار التسجيل (محمي ضد المدخلات الضارة وكشف الحسابات)
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
     const { email, password, username } = req.body;
@@ -67,8 +63,6 @@ app.post('/api/register', authLimiter, async (req, res) => {
     }
 
     const { data: existingUser } = await supabase.from('users').select('email').eq('email', email).single();
-    
-    // منع كشف الحسابات: رسالة عامة بدلاً من "User already exists"
     if (existingUser) return res.status(400).json({ error: 'Registration failed. Please try logging in.' });
 
     const salt = await bcrypt.genSalt(10);
@@ -86,14 +80,12 @@ app.post('/api/register', authLimiter, async (req, res) => {
   }
 });
 
-// 4. مسار الدخول (جلب الحقول المطلوبة فقط + تحقق أساسي)
 app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     
     if (!email || !password) return res.status(400).json({ error: 'Please enter email and password' });
 
-    // نجلب فقط الحقول التي نحتاجها بدلاً من select('*')
     const { data: user, error } = await supabase
       .from('users')
       .select('id, email, username, balance, password')
@@ -117,51 +109,50 @@ app.post('/api/login', authLimiter, async (req, res) => {
   }
 });
 
-// 5. مسار شراء الباقة (محمي ضد الخصم المزدوج + كلمة مرور عشوائية)
+// ==========================================
+// مسار شراء الباقة (محمي بدالة قاعدة البيانات الذرية)
+// ==========================================
 app.post('/api/buy-proxy', authenticateToken, async (req, res) => {
   try {
     const { plan } = req.body;
     const userId = req.user.id; 
 
-    const planPrices = {
-      '300MB': 0.25,
-      '600MB': 0.50,
-      '1000MB': 1.00 // تم إصلاحها لتطابق الواجهة
-    };
-    
-    const price = planPrices[plan];
-    if (!price) return res.status(400).json({ error: 'Invalid plan' });
+    // استدعاء الدالة الذرية في قاعدة البيانات
+    const { data, error } = await supabase.rpc('purchase_plan', {
+      p_user_id: userId,
+      p_plan_id: plan
+    });
 
-    const { data: user, error } = await supabase.from('users').select('balance').eq('id', userId).single();
-    if (error || !user) return res.status(404).json({ error: 'User not found' });
-
-    if (user.balance < price) return res.status(400).json({ error: 'Insufficient balance' });
-
-    const { data: updatedUser, error: updateError } = await supabase
-      .from('users')
-      .update({ balance: user.balance - price })
-      .eq('id', userId)
-      .gte('balance', price) 
-      .select('balance');
-
-    if (updateError || !updatedUser || updatedUser.length === 0) {
-      return res.status(400).json({ error: 'Insufficient balance or concurrent transaction' });
+    if (error) {
+      if (error.message.includes('insufficient_balance')) {
+        return res.status(400).json({ error: 'Insufficient balance' });
+      }
+      if (error.message.includes('invalid_plan')) {
+        return res.status(400).json({ error: 'Invalid plan' });
+      }
+      console.error("Purchase RPC Error:", error.message);
+      return res.status(500).json({ error: 'Server error during purchase' });
     }
 
-    const newBalance = updatedUser[0].balance;
+    // جلب الرصيد الجديد لعرضه في الواجهة
+    const { data: userData } = await supabase.from('users').select('balance').eq('id', userId).single();
 
-    // 6. توليد كلمة مرور عشوائية للبروكسي بدلاً من الثابتة
-    const randomPassword = crypto.randomBytes(8).toString('hex');
+    // Supabase RPC ترجع النتيجة أحياناً كمصفوفة وأحياناً ككائن
+    const session = Array.isArray(data) ? data[0] : data;
 
-    const mockProxy = {
-      host: 'us-residential.hproxy.net', port: 8000,
-      username: `user_${userId}_sess_${Math.floor(Math.random() * 10000)}`, 
-      password: randomPassword, 
-      dataLimit: plan
-    };
-
-    res.json({ message: 'Purchase successful', newBalance, proxy: mockProxy });
+    res.json({ 
+      message: 'Purchase successful', 
+      newBalance: userData.balance,
+      proxy: {
+        host: session.host,
+        port: session.port,
+        username: session.proxy_username,
+        password: session.proxy_password,
+        dataLimit: session.plan_id
+      }
+    });
   } catch (error) {
+    console.error("Purchase Catch Error:", error.message);
     res.status(500).json({ error: 'Server error during purchase' });
   }
 });
@@ -195,7 +186,6 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
   }
 });
 
-// مسار البروكسيات المجانية (محمي بدون حد أقصى كما طلبت)
 app.get('/api/proxies', authenticateToken, async (req, res) => {
   try {
     const response = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&countryCode=us&limit=100');
