@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const { OAuth2Client } = require('google-auth-library');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -26,6 +27,9 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   console.error("FATAL SECURITY ERROR: JWT_SECRET is missing or too short. Server shutting down.");
   process.exit(1);
 }
+
+// إعداد جوجل (ضع الـ Client ID الخاص بك هنا لاحقاً)
+const googleClient = new OAuth2Client('YOUR_GOOGLE_CLIENT_ID');
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -54,8 +58,9 @@ app.post('/api/register', authLimiter, async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return res.status(400).json({ error: 'Invalid email format' });
 
-    if (password.length < 8 || password.length > 72) {
-      return res.status(400).json({ error: 'Password must be between 8 and 72 characters' });
+    // أزلنا شرط الطول بناء على طلبك، لكن نبقي حد 72 لمنع استنزاف الخادم
+    if (password.length < 1 || password.length > 72) {
+      return res.status(400).json({ error: 'Password is invalid' });
     }
 
     if (username && username.length > 20) {
@@ -83,16 +88,11 @@ app.post('/api/register', authLimiter, async (req, res) => {
 app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-    
     if (!email || !password) return res.status(400).json({ error: 'Please enter email and password' });
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, email, username, balance, password')
-      .eq('email', email)
-      .single();
+    const { data: user, error } = await supabase.from('users').select('id, email, username, balance, password').eq('email', email).single();
 
-    if (error || !user) return res.status(400).json({ error: 'Invalid credentials' });
+    if (error || !user || !user.password) return res.status(400).json({ error: 'Invalid credentials' });
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
@@ -100,8 +100,7 @@ app.post('/api/login', authLimiter, async (req, res) => {
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '1d' });
 
     res.json({ 
-      message: 'Login successful', 
-      token,
+      message: 'Login successful', token,
       user: { id: user.id, email: user.email, username: user.username || user.email.split('@')[0], balance: user.balance || 0 }
     });
   } catch (error) {
@@ -109,50 +108,61 @@ app.post('/api/login', authLimiter, async (req, res) => {
   }
 });
 
-// ==========================================
-// مسار شراء الباقة (محمي بدالة قاعدة البيانات الذرية)
-// ==========================================
+// مسار جديد: تسجيل الدخول عبر جوجل
+app.post('/api/auth/google', authLimiter, async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    const ticket = await googleClient.verifyIdToken({
+        idToken: idToken,
+        audience: 'YOUR_GOOGLE_CLIENT_ID', // يجب أن يطابق الـ Client ID
+    });
+    const payload = ticket.getPayload();
+    const { email, name } = payload;
+
+    // التحقق إذا كان المستخدم موجوداً
+    let { data: user } = await supabase.from('users').select('*').eq('email', email).single();
+
+    // إذا لم يكن موجوداً، ننشئ حساباً جديداً له بكلمة مرور فارغة (لأنه يستخدم جوجل)
+    if (!user) {
+      const { data: newUser, error } = await supabase.from('users').insert([{ 
+        email, password: '', username: name || email.split('@')[0], balance: 0 
+      }]).select().single();
+      if (error) throw error;
+      user = newUser;
+    }
+
+    const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '1d' });
+    res.json({ 
+      message: 'Google Login successful', token,
+      user: { id: user.id, email: user.email, username: user.username, balance: user.balance || 0 }
+    });
+  } catch (error) {
+    console.error("Google Auth Error:", error.message);
+    res.status(401).json({ error: 'Google authentication failed' });
+  }
+});
+
 app.post('/api/buy-proxy', authenticateToken, async (req, res) => {
   try {
     const { plan } = req.body;
     const userId = req.user.id; 
 
-    // استدعاء الدالة الذرية في قاعدة البيانات
-    const { data, error } = await supabase.rpc('purchase_plan', {
-      p_user_id: userId,
-      p_plan_id: plan
-    });
+    const { data, error } = await supabase.rpc('purchase_plan', { p_user_id: userId, p_plan_id: plan });
 
     if (error) {
-      if (error.message.includes('insufficient_balance')) {
-        return res.status(400).json({ error: 'Insufficient balance' });
-      }
-      if (error.message.includes('invalid_plan')) {
-        return res.status(400).json({ error: 'Invalid plan' });
-      }
-      console.error("Purchase RPC Error:", error.message);
+      if (error.message.includes('insufficient_balance')) return res.status(400).json({ error: 'Insufficient balance' });
+      if (error.message.includes('invalid_plan')) return res.status(400).json({ error: 'Invalid plan' });
       return res.status(500).json({ error: 'Server error during purchase' });
     }
 
-    // جلب الرصيد الجديد لعرضه في الواجهة
     const { data: userData } = await supabase.from('users').select('balance').eq('id', userId).single();
-
-    // Supabase RPC ترجع النتيجة أحياناً كمصفوفة وأحياناً ككائن
     const session = Array.isArray(data) ? data[0] : data;
 
     res.json({ 
-      message: 'Purchase successful', 
-      newBalance: userData.balance,
-      proxy: {
-        host: session.host,
-        port: session.port,
-        username: session.proxy_username,
-        password: session.proxy_password,
-        dataLimit: session.plan_id
-      }
+      message: 'Purchase successful', newBalance: userData.balance,
+      proxy: { host: session.host, port: session.port, username: session.proxy_username, password: session.proxy_password, dataLimit: session.plan_id }
     });
   } catch (error) {
-    console.error("Purchase Catch Error:", error.message);
     res.status(500).json({ error: 'Server error during purchase' });
   }
 });
@@ -162,26 +172,23 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
     const { oldPassword, newPassword } = req.body;
     const userId = req.user.id;
 
-    if (!oldPassword || !newPassword) return res.status(400).json({ error: 'Please provide old and new password' });
-
-    if (newPassword.length < 8 || newPassword.length > 72) {
-      return res.status(400).json({ error: 'New password must be between 8 and 72 characters' });
-    }
+    if (!newPassword || newPassword.length > 72) return res.status(400).json({ error: 'Invalid password' });
 
     const { data: user, error } = await supabase.from('users').select('password').eq('id', userId).single();
     if (error || !user) return res.status(404).json({ error: 'User not found' });
 
-    const isMatch = await bcrypt.compare(oldPassword, user.password);
-    if (!isMatch) return res.status(400).json({ error: 'Incorrect old password' });
+    // إذا كان المستخدم مسجل بجوجل وليس لديه كلمة مرور قديمة
+    if (user.password) {
+        const isMatch = await bcrypt.compare(oldPassword, user.password);
+        if (!isMatch) return res.status(400).json({ error: 'Incorrect old password' });
+    }
 
     const salt = await bcrypt.genSalt(10);
     const hashedNewPassword = await bcrypt.hash(newPassword, salt);
-
     await supabase.from('users').update({ password: hashedNewPassword }).eq('id', userId);
 
     res.json({ message: 'Password updated successfully' });
   } catch (error) {
-    console.error("Change Password Error:", error.message);
     res.status(500).json({ error: 'Server error during password change' });
   }
 });
