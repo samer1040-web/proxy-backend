@@ -1,4 +1,4 @@
-require('dotenv').config(); // قراءة ملف .env السري
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -8,11 +8,14 @@ const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
+
+// 1. إصلاح خطأ X-Forwarded-For (خاص بـ Render)
+app.set('trust proxy', 1);
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// إعداد الاتصال بقاعدة بيانات Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -25,12 +28,9 @@ const authLimiter = rateLimit({
   message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
-// ---------------------------------------------------------
-// مسار التسجيل (Register) - متصل بـ Supabase
-// ---------------------------------------------------------
+// مسار التسجيل
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
-    // استقبال اسم المستخدم أيضاً
     const { email, password, username } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Please enter email and password' });
 
@@ -45,17 +45,19 @@ app.post('/api/register', authLimiter, async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // حفظ اسم المستخدم مع البيانات
     const { error } = await supabase
       .from('users')
       .insert([{ 
         email: email, 
         password: hashedPassword, 
-        username: username || email.split('@')[0], // إذا لم يضع اسماً، نأخذ ما قبل @ من الإيميل
+        username: username || email.split('@')[0],
         balance: 0 
       }]);
 
-    if (error) throw error;
+    if (error) {
+        console.error("Supabase Insert Error:", error); // لطباعة الخطأ الحقيقي في السجلات
+        throw error;
+    }
 
     res.status(201).json({ message: 'User registered successfully' });
   } catch (error) {
@@ -64,9 +66,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------
-// مسار تسجيل الدخول (Login) - متصل بـ Supabase
-// ---------------------------------------------------------
+// مسار تسجيل الدخول
 app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -85,7 +85,6 @@ app.post('/api/login', authLimiter, async (req, res) => {
 
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '1d' });
 
-    // إرجاع اسم المستخدم مع البيانات
     res.json({ 
       message: 'Login successful', 
       token: token,
@@ -102,9 +101,7 @@ app.post('/api/login', authLimiter, async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------
-// مسار جلب البروكسيات المجانية (كما هو تماماً)
-// ---------------------------------------------------------
+// مسار جلب البروكسيات المجانية
 app.get('/api/proxies', async (req, res) => {
   try {
     const response = await axios.get('https://proxmint.com/api/free-proxies?protocol=socks5&anonymity=elite&countryCode=us&limit=100');
@@ -127,9 +124,6 @@ app.get('/api/proxies', async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------
-// تشغيل الخادم
-// ---------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
