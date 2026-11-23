@@ -17,7 +17,7 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const JWT_SECRET = 'ProxyNova_Super_Secret_Key_2024'; // مفتاح التشفير
+const JWT_SECRET = 'ProxyNova_Super_Secret_Key_2024'; 
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -30,10 +30,10 @@ const authLimiter = rateLimit({
 // ---------------------------------------------------------
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    // استقبال اسم المستخدم أيضاً
+    const { email, password, username } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Please enter email and password' });
 
-    // 1. التحقق إذا كان المستخدم موجوداً مسبقاً في قاعدة البيانات
     const { data: existingUser } = await supabase
       .from('users')
       .select('email')
@@ -42,16 +42,16 @@ app.post('/api/register', authLimiter, async (req, res) => {
 
     if (existingUser) return res.status(400).json({ error: 'User already exists' });
 
-    // 2. تشفير كلمة المرور
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 3. حفظ المستخدم الجديد في قاعدة البيانات
+    // حفظ اسم المستخدم مع البيانات
     const { error } = await supabase
       .from('users')
       .insert([{ 
         email: email, 
         password: hashedPassword, 
+        username: username || email.split('@')[0], // إذا لم يضع اسماً، نأخذ ما قبل @ من الإيميل
         balance: 0 
       }]);
 
@@ -72,7 +72,6 @@ app.post('/api/login', authLimiter, async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Please enter email and password' });
 
-    // 1. جلب المستخدم من قاعدة البيانات
     const { data: user, error } = await supabase
       .from('users')
       .select('*')
@@ -81,18 +80,21 @@ app.post('/api/login', authLimiter, async (req, res) => {
 
     if (error || !user) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // 2. التحقق من كلمة المرور
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // 3. إنشاء التوكن
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '1d' });
 
-    // 4. إرسال التوكن وبيانات المستخدم (مع الرصيد)
+    // إرجاع اسم المستخدم مع البيانات
     res.json({ 
       message: 'Login successful', 
       token: token,
-      user: { id: user.id, email: user.email, balance: user.balance || 0 }
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        username: user.username || user.email.split('@')[0], 
+        balance: user.balance || 0 
+      }
     });
   } catch (error) {
     console.error("Login Error:", error.message);
@@ -101,7 +103,7 @@ app.post('/api/login', authLimiter, async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// مسار جلب البروكسيات المجانية (كما هو تماماً - لم نلمسه)
+// مسار جلب البروكسيات المجانية (كما هو تماماً)
 // ---------------------------------------------------------
 app.get('/api/proxies', async (req, res) => {
   try {
