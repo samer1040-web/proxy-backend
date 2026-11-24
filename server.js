@@ -28,8 +28,9 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   process.exit(1);
 }
 
-// إعداد جوجل (ضع الـ Client ID الخاص بك هنا لاحقاً)
-const googleClient = new OAuth2Client('YOUR_GOOGLE_CLIENT_ID');
+// تم وضع الـ Client ID الخاص بك هنا
+const GOOGLE_CLIENT_ID = '572901406239-ft74dvvuomeimdndcu3bqnrhnvmr63ur.apps.googleusercontent.com';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -58,7 +59,6 @@ app.post('/api/register', authLimiter, async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return res.status(400).json({ error: 'Invalid email format' });
 
-    // أزلنا شرط الطول بناء على طلبك، لكن نبقي حد 72 لمنع استنزاف الخادم
     if (password.length < 1 || password.length > 72) {
       return res.status(400).json({ error: 'Password is invalid' });
     }
@@ -88,9 +88,14 @@ app.post('/api/register', authLimiter, async (req, res) => {
 app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
+    
     if (!email || !password) return res.status(400).json({ error: 'Please enter email and password' });
 
-    const { data: user, error } = await supabase.from('users').select('id, email, username, balance, password').eq('email', email).single();
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, email, username, balance, password')
+      .eq('email', email)
+      .single();
 
     if (error || !user || !user.password) return res.status(400).json({ error: 'Invalid credentials' });
 
@@ -108,21 +113,19 @@ app.post('/api/login', authLimiter, async (req, res) => {
   }
 });
 
-// مسار جديد: تسجيل الدخول عبر جوجل
+// تسجيل الدخول عبر جوجل
 app.post('/api/auth/google', authLimiter, async (req, res) => {
   try {
     const { idToken } = req.body;
     const ticket = await googleClient.verifyIdToken({
         idToken: idToken,
-        audience: 'YOUR_GOOGLE_CLIENT_ID', // يجب أن يطابق الـ Client ID
+        audience: GOOGLE_CLIENT_ID,
     });
     const payload = ticket.getPayload();
     const { email, name } = payload;
 
-    // التحقق إذا كان المستخدم موجوداً
     let { data: user } = await supabase.from('users').select('*').eq('email', email).single();
 
-    // إذا لم يكن موجوداً، ننشئ حساباً جديداً له بكلمة مرور فارغة (لأنه يستخدم جوجل)
     if (!user) {
       const { data: newUser, error } = await supabase.from('users').insert([{ 
         email, password: '', username: name || email.split('@')[0], balance: 0 
@@ -177,7 +180,6 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
     const { data: user, error } = await supabase.from('users').select('password').eq('id', userId).single();
     if (error || !user) return res.status(404).json({ error: 'User not found' });
 
-    // إذا كان المستخدم مسجل بجوجل وليس لديه كلمة مرور قديمة
     if (user.password) {
         const isMatch = await bcrypt.compare(oldPassword, user.password);
         if (!isMatch) return res.status(400).json({ error: 'Incorrect old password' });
