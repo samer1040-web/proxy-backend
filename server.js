@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const crypto = require('crypto'); // تمت إضافته لتوقيع Binance API
 const { OAuth2Client } = require('google-auth-library');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -28,7 +29,6 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   process.exit(1);
 }
 
-// تم وضع الـ Client ID الخاص بك هنا
 const GOOGLE_CLIENT_ID = '572901406239-ft74dvvuomeimdndcu3bqnrhnvmr63ur.apps.googleusercontent.com';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
@@ -113,7 +113,6 @@ app.post('/api/login', authLimiter, async (req, res) => {
   }
 });
 
-// تسجيل الدخول عبر جوجل
 app.post('/api/auth/google', authLimiter, async (req, res) => {
   try {
     const { idToken } = req.body;
@@ -205,6 +204,74 @@ app.get('/api/proxies', authenticateToken, async (req, res) => {
     res.json({ proxies: bestProxies });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch proxies', proxies: [] });
+  }
+});
+
+// ==========================================
+// 🚀 المسار الجديد للتحقق من مدفوعات Binance
+// ==========================================
+app.post('/api/verify-payment', authenticateToken, async (req, res) => {
+  const { txId, amount } = req.body;
+  const userId = req.user.id;
+
+  if (!txId || !amount) return res.status(400).json({ error: 'Missing transaction ID or amount' });
+
+  try {
+    // 1. التحقق من عدم استخدام رقم العملية مسبقاً
+    const { data: existingTx } = await supabase.from('transactions').select('id').eq('txid', txId).single();
+    if (existingTx) {
+      return res.status(400).json({ error: 'Transaction ID already used' });
+    }
+
+    // 2. الاتصال بـ Binance للتحقق من العملية
+    const timestamp = Date.now();
+    const queryString = `timestamp=${timestamp}`;
+    const signature = crypto.createHmac('sha256', process.env.BINANCE_SECRET_KEY).update(queryString).digest('hex');
+    const binanceUrl = `https://api.binance.com/sapi/v1/pay/transactions?${queryString}&signature=${signature}`;
+
+    const response = await axios.get(binanceUrl, {
+      headers: { 'X-MBX-APIKEY': process.env.BINANCE_API_KEY }
+    });
+
+    const transactions = response.data.data || [];
+    // البحث عن العملية برقم الـ TxID
+    const validTx = transactions.find(t => t.transactionId === txId || t.orderId === txId);
+
+    if (!validTx) {
+      return res.status(404).json({ error: 'Transaction not found on Binance' });
+    }
+
+    // التحقق من أن العملة هي USDT والمبلغ صحيح
+    if (validTx.currency !== 'USDT' || parseFloat(validTx.amount) < parseFloat(amount)) {
+      return res.status(400).json({ error: 'Invalid amount or currency' });
+    }
+
+    // 3. تحديث رصيد المستخدم في قاعدة البيانات (ذرّياً)
+    const { data: userData, error: userError } = await supabase.from('users').select('balance').eq('id', userId).single();
+    if (userError) throw userError;
+
+    const newBalance = (userData.balance || 0) + parseFloat(amount);
+
+    const { error: updateError } = await supabase.from('users').update({ balance: newBalance }).eq('id', userId);
+    if (updateError) throw updateError;
+
+    // 4. تسجيل العملية لمنع التكرار
+    await supabase.from('transactions').insert([{
+      user_id: userId,
+      amount: parseFloat(amount),
+      txid: txId,
+      type: 'topup',
+      status: 'completed'
+    }]);
+
+    res.json({ message: 'Payment verified successfully', newBalance: newBalance });
+
+  } catch (error) {
+    console.error("Binance Verification Error:", error.message);
+    if (error.response && error.response.status === 451) {
+        return res.status(500).json({ error: 'Binance API restricted from this server region (Render).' });
+    }
+    res.status(500).json({ error: 'Server error during payment verification' });
   }
 });
 
